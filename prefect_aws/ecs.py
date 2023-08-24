@@ -1329,6 +1329,19 @@ class ECSTask(Infrastructure):
             container.setdefault("cpu", int(cpu))
             container.setdefault("memory", int(memory))
 
+        elif self.launch_type == "EXTERNAL":
+            # Container level memory and cpu are required when using external instances
+            container.setdefault("cpu", int(cpu))
+            container.setdefault("memory", int(memory))
+
+            # The EXTERNAL compatibility is required if it will be used as the launch
+            # type
+            requires_compatibilities = task_definition.setdefault(
+                "requiresCompatibilities", []
+            )
+            if "EXTERNAL" not in requires_compatibilities:
+                task_definition["requiresCompatibilities"].append("EXTERNAL")
+
         if self.execution_role_arn and not self.task_definition_arn:
             task_definition["executionRoleArn"] = self.execution_role_arn
 
