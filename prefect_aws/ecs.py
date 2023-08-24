@@ -123,6 +123,7 @@ from prefect.utilities.dockerutils import get_prefect_image_name
 from prefect.utilities.pydantic import JsonPatch
 from pydantic import Field, root_validator, validator
 from slugify import slugify
+from tenacity import retry, stop_after_attempt, wait_fixed, wait_random
 from typing_extensions import Literal, Self
 
 from prefect_aws import AwsCredentials
@@ -140,6 +141,12 @@ if TYPE_CHECKING:
 class ECSTaskResult(InfrastructureResult):
     """The result of a run of an ECS task"""
 
+
+# Create task run retry settings
+MAX_CREATE_TASK_RUN_ATTEMPTS = 3
+CREATE_TASK_RUN_MIN_DELAY_SECONDS = 1
+CREATE_TASK_RUN_MIN_DELAY_JITTER_SECONDS = 0
+CREATE_TASK_RUN_MAX_DELAY_JITTER_SECONDS = 3
 
 PREFECT_ECS_CONTAINER_NAME = "prefect"
 ECS_DEFAULT_CPU = 1024
@@ -807,7 +814,29 @@ class ECSTask(Infrastructure):
         self.logger.debug("Task run payload\n" + yaml.dump(task_run))
 
         try:
-            task = self._run_task(ecs_client, task_run)
+            try:
+                task = self._run_task(ecs_client, task_run)
+            except Exception as exc:
+                capacity_provider_strategy = task_run.get(
+                    "capacityProviderStrategy", []
+                )
+                if (
+                    capacity_provider_strategy
+                    and capacity_provider_strategy[0].get("capacityProvider")
+                    == "FARGATE_SPOT"
+                ):
+                    self.logger.info(
+                        "Unable to start task using FARGATE_SPOT provider. "
+                        f"Error: {str(exc)}"
+                    )
+                    self.logger.info("Retrying with FARGATE provider...")
+
+                    task_run.pop("capacityProviderStrategy")
+                    task_run["launchType"] = "FARGATE"
+                    task = self._run_task(ecs_client, task_run)
+                else:
+                    raise exc
+
             task_arn = task["taskArn"]
             cluster_arn = task["clusterArn"]
         except Exception as exc:
@@ -1478,6 +1507,14 @@ class ECSTask(Infrastructure):
         task_run = self.task_customizations.apply(task_run)
         return task_run
 
+    @retry(
+        stop=stop_after_attempt(MAX_CREATE_TASK_RUN_ATTEMPTS),
+        wait=wait_fixed(CREATE_TASK_RUN_MIN_DELAY_SECONDS)
+        + wait_random(
+            CREATE_TASK_RUN_MIN_DELAY_JITTER_SECONDS,
+            CREATE_TASK_RUN_MAX_DELAY_JITTER_SECONDS,
+        ),
+    )
     def _run_task(self, ecs_client: _ECSClient, task_run: dict):
         """
         Run the task using the ECS client.
