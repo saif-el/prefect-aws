@@ -152,6 +152,7 @@ PREFECT_ECS_CONTAINER_NAME = "prefect"
 ECS_DEFAULT_CPU = 1024
 ECS_DEFAULT_MEMORY = 2048
 ECS_DEFAULT_FAMILY = "prefect"
+ORCHESTRATION_PREFIX = "ORCHESTRATION__"
 POST_REGISTRATION_FIELDS = [
     "compatibilities",
     "taskDefinitionArn",
@@ -605,10 +606,11 @@ class ECSTask(Infrastructure):
 
         new = super().prepare_for_flow_run(flow_run, deployment=deployment, flow=flow)
 
-        # Update 'env' from flow_run context
+        # Update ENV using flow-run details
         env_update = flow_run.context.get("env", {})
         for k, v in env_update.items():
             env_update[str(k).upper()] = str(v)
+        env_update[ORCHESTRATION_PREFIX + "JOB_ID"] = flow_run.id
         new.env.update(env_update)
 
         if new_family:
@@ -1397,9 +1399,15 @@ class ECSTask(Infrastructure):
         """
         Prepare task-run overrides for task resources (cpu, memory, storage)
         """
-        cpu = int(float(self.env.get("CPU") or self.cpu or task_definition.get("cpu")))
-        memory = int(float(self.env.get("MEMORY") or self.memory or task_definition.get("memory")))
-        storage = int(float(self.env.get("STORAGE") or task_definition.get("ephemeralStorage", {}).get("sizeInGiB")))
+        cpu = int(float(
+            self.env.get(ORCHESTRATION_PREFIX + "CPU") or self.cpu or task_definition.get("cpu")
+        ))
+        memory = int(float(
+            self.env.get(ORCHESTRATION_PREFIX + "MEMORY") or self.memory or task_definition.get("memory")
+        ))
+        storage = int(float(
+            self.env.get(ORCHESTRATION_PREFIX + "STORAGE") or task_definition.get("ephemeralStorage", {}).get("sizeInGiB")
+        ))
 
         overrides["cpu"] = str(cpu)
         prefect_container_overrides["cpu"] = cpu
@@ -1411,13 +1419,16 @@ class ECSTask(Infrastructure):
 
         _new_env = []
         for dict_item in prefect_container_overrides["environment"]:
-            if dict_item["name"] not in {"CPU", "MEMORY", "STORAGE"}:
+            if dict_item["name"] not in [
+                ORCHESTRATION_PREFIX + _key
+                for _key in {"CPU", "MEMORY", "STORAGE"}
+            ]:
                 _new_env.append(dict_item)
 
         _new_env.extend([
-            {"name": "CPU", "value": str(cpu)},
-            {"name": "MEMORY", "value": str(memory)},
-            {"name": "STORAGE", "value": str(storage)}
+            {"name": ORCHESTRATION_PREFIX + "CPU", "value": str(cpu)},
+            {"name": ORCHESTRATION_PREFIX + "MEMORY", "value": str(memory)},
+            {"name": ORCHESTRATION_PREFIX + "STORAGE", "value": str(storage)}
         ])
 
         prefect_container_overrides["environment"] = _new_env
