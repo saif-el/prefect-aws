@@ -152,6 +152,7 @@ PREFECT_ECS_CONTAINER_NAME = "prefect"
 ECS_DEFAULT_CPU = 1024
 ECS_DEFAULT_MEMORY = 2048
 ECS_DEFAULT_FAMILY = "prefect"
+ORCHESTRATION_PREFIX = "ORCHESTRATION__"
 POST_REGISTRATION_FIELDS = [
     "compatibilities",
     "taskDefinitionArn",
@@ -605,6 +606,13 @@ class ECSTask(Infrastructure):
 
         new = super().prepare_for_flow_run(flow_run, deployment=deployment, flow=flow)
 
+        # Update ENV using flow-run details
+        env_update = flow_run.context.get("env", {})
+        for k, v in env_update.items():
+            env_update[str(k).upper()] = str(v)
+        env_update[ORCHESTRATION_PREFIX + "JOB_ID"] = str(flow_run.id)
+        new.env.update(env_update)
+
         if new_family:
             return new.copy(update={"family": new_family})
         else:
@@ -766,7 +774,14 @@ class ECSTask(Infrastructure):
             latest_task_definition = self._retrieve_latest_task_definition(
                 ecs_client, task_definition["family"]
             )
-            if self._task_definitions_equal(latest_task_definition, task_definition):
+            # Ignore cpu, memory & storage keys from comparison
+            # because they can be overriden in ecs_client.run_task()
+            # without having to register a new task_def
+            if self._task_definitions_equal(
+                latest_task_definition,
+                task_definition,
+                ignore_keys= ["cpu", "memory", "ephemeralStorage"]
+            ):
                 self.logger.debug(
                     f"{self._log_prefix}: The latest task definition matches the "
                     "required task definition; using that instead of registering a new "
@@ -809,6 +824,7 @@ class ECSTask(Infrastructure):
         task_run = self._prepare_task_run(
             network_config=network_config,
             task_definition_arn=task_definition_arn,
+            task_definition=task_definition
         )
         self.logger.info(f"{self._log_prefix}: Creating task run...")
         self.logger.debug("Task run payload\n" + yaml.dump(task_run))
@@ -884,7 +900,7 @@ class ECSTask(Infrastructure):
 
         return status_code
 
-    def _task_definitions_equal(self, taskdef_1, taskdef_2) -> bool:
+    def _task_definitions_equal(self, taskdef_1, taskdef_2, ignore_keys=None) -> bool:
         """
         Compare two task definitions.
 
@@ -933,6 +949,11 @@ class ECSTask(Infrastructure):
         for field in POST_REGISTRATION_FIELDS:
             taskdef_1.pop(field, None)
             taskdef_2.pop(field, None)
+
+        if ignore_keys:
+            for key in ignore_keys:
+                taskdef_1.pop(key, None)
+                taskdef_2.pop(key, None)
 
         return taskdef_1 == taskdef_2
 
@@ -1372,7 +1393,47 @@ class ECSTask(Infrastructure):
 
         return task_definition
 
-    def _prepare_task_run_overrides(self) -> dict:
+    def _prepare_task_run_resources_overrides(
+        self, overrides: dict, prefect_container_overrides: dict, task_definition: dict
+    ) -> None:
+        """
+        Prepare task-run overrides for task resources (cpu, memory, storage)
+        """
+        cpu = int(float(
+            self.env.get(ORCHESTRATION_PREFIX + "CPU") or self.cpu or task_definition.get("cpu")
+        ))
+        memory = int(float(
+            self.env.get(ORCHESTRATION_PREFIX + "MEMORY") or self.memory or task_definition.get("memory")
+        ))
+        storage = int(float(
+            self.env.get(ORCHESTRATION_PREFIX + "STORAGE") or task_definition.get("ephemeralStorage", {}).get("sizeInGiB")
+        ))
+
+        overrides["cpu"] = str(cpu)
+        prefect_container_overrides["cpu"] = cpu
+        
+        overrides["memory"] = str(memory)
+        prefect_container_overrides["memory"] = memory
+
+        overrides["ephemeralStorage"] = {"sizeInGiB": storage}
+
+        _new_env = []
+        for dict_item in prefect_container_overrides["environment"]:
+            if dict_item["name"] not in [
+                ORCHESTRATION_PREFIX + _key
+                for _key in {"CPU", "MEMORY", "STORAGE"}
+            ]:
+                _new_env.append(dict_item)
+
+        _new_env.extend([
+            {"name": ORCHESTRATION_PREFIX + "CPU", "value": str(cpu)},
+            {"name": ORCHESTRATION_PREFIX + "MEMORY", "value": str(memory)},
+            {"name": ORCHESTRATION_PREFIX + "STORAGE", "value": str(storage)}
+        ])
+
+        prefect_container_overrides["environment"] = _new_env
+
+    def _prepare_task_run_overrides(self, task_definition: dict) -> dict:
         """
         Prepare the 'overrides' payload for a task run request.
         """
@@ -1403,13 +1464,9 @@ class ECSTask(Infrastructure):
         if self.task_role_arn:
             overrides["taskRoleArn"] = self.task_role_arn
 
-        if self.memory:
-            overrides["memory"] = str(self.memory)
-            prefect_container_overrides.setdefault("memory", self.memory)
-
-        if self.cpu:
-            overrides["cpu"] = str(self.cpu)
-            prefect_container_overrides.setdefault("cpu", self.cpu)
+        self._prepare_task_run_resources_overrides(
+            overrides, prefect_container_overrides, task_definition
+        )
 
         return overrides
 
@@ -1464,12 +1521,16 @@ class ECSTask(Infrastructure):
         self,
         network_config: Optional[dict],
         task_definition_arn: str,
+        task_definition: dict = None
     ) -> dict:
         """
         Prepare a task run request payload.
         """
+        if not task_definition:
+            task_definition = {}
+
         task_run = {
-            "overrides": self._prepare_task_run_overrides(),
+            "overrides": self._prepare_task_run_overrides(task_definition),
             "tags": [
                 {
                     "key": slugify(
