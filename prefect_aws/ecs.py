@@ -610,7 +610,7 @@ class ECSTask(Infrastructure):
         env_update = flow_run.context.get("env", {})
         for k, v in env_update.items():
             env_update[str(k).upper()] = str(v)
-        env_update[ORCHESTRATION_PREFIX + "JOB_ID"] = flow_run.id
+        env_update[ORCHESTRATION_PREFIX + "JOB_ID"] = str(flow_run.id)
         new.env.update(env_update)
 
         if new_family:
