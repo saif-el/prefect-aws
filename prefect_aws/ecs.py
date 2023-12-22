@@ -606,12 +606,29 @@ class ECSTask(Infrastructure):
 
         new = super().prepare_for_flow_run(flow_run, deployment=deployment, flow=flow)
 
-        # Update ENV using flow-run details
+        # Update 'ECSTask' using flow-run context & details
+        # update 'env'
         env_update = flow_run.context.get("env", {})
         for k, v in env_update.items():
             env_update[str(k).upper()] = str(v)
-        env_update[ORCHESTRATION_PREFIX + "JOB_ID"] = str(flow_run.id)
+
+        _job_id_key = ORCHESTRATION_PREFIX + "JOB_ID"
+        if _job_id_key not in env_update:
+            env_update[_job_id_key] = str(flow_run.id)
+
         new.env.update(env_update)
+
+        # update 'cpu' and 'memory'
+        if flow_run.context.get("cpu"):
+            new.cpu = flow_run.context.get("cpu")
+        if flow_run.context.get("memory"):
+            new.memory = flow_run.context.get("memory")
+
+        # update 'task_customizations'
+        task_customizations_upd = flow_run.context.get("task_customizations", [])
+        new.task_customizations = JsonPatch(
+            new.task_customizations.patch + task_customizations_upd
+        )
 
         if new_family:
             return new.copy(update={"family": new_family})
@@ -826,6 +843,7 @@ class ECSTask(Infrastructure):
             task_definition_arn=task_definition_arn,
             task_definition=task_definition
         )
+        print("Task run payload:", task_run)
         self.logger.info(f"{self._log_prefix}: Creating task run...")
         self.logger.debug("Task run payload\n" + yaml.dump(task_run))
 
@@ -954,6 +972,9 @@ class ECSTask(Infrastructure):
             for key in ignore_keys:
                 taskdef_1.pop(key, None)
                 taskdef_2.pop(key, None)
+        
+        if taskdef_1 != taskdef_2:
+            print("Task definition has changed:", taskdef_1, taskdef_2, sep="\n")
 
         return taskdef_1 == taskdef_2
 
@@ -1393,46 +1414,6 @@ class ECSTask(Infrastructure):
 
         return task_definition
 
-    def _prepare_task_run_resources_overrides(
-        self, overrides: dict, prefect_container_overrides: dict, task_definition: dict
-    ) -> None:
-        """
-        Prepare task-run overrides for task resources (cpu, memory, storage)
-        """
-        cpu = int(float(
-            self.env.get(ORCHESTRATION_PREFIX + "CPU") or self.cpu or task_definition.get("cpu")
-        ))
-        memory = int(float(
-            self.env.get(ORCHESTRATION_PREFIX + "MEMORY") or self.memory or task_definition.get("memory")
-        ))
-        storage = int(float(
-            self.env.get(ORCHESTRATION_PREFIX + "STORAGE") or task_definition.get("ephemeralStorage", {}).get("sizeInGiB")
-        ))
-
-        overrides["cpu"] = str(cpu)
-        prefect_container_overrides["cpu"] = cpu
-        
-        overrides["memory"] = str(memory)
-        prefect_container_overrides["memory"] = memory
-
-        overrides["ephemeralStorage"] = {"sizeInGiB": storage}
-
-        _new_env = []
-        for dict_item in prefect_container_overrides["environment"]:
-            if dict_item["name"] not in [
-                ORCHESTRATION_PREFIX + _key
-                for _key in {"CPU", "MEMORY", "STORAGE"}
-            ]:
-                _new_env.append(dict_item)
-
-        _new_env.extend([
-            {"name": ORCHESTRATION_PREFIX + "CPU", "value": str(cpu)},
-            {"name": ORCHESTRATION_PREFIX + "MEMORY", "value": str(memory)},
-            {"name": ORCHESTRATION_PREFIX + "STORAGE", "value": str(storage)}
-        ])
-
-        prefect_container_overrides["environment"] = _new_env
-
     def _prepare_task_run_overrides(self, task_definition: dict) -> dict:
         """
         Prepare the 'overrides' payload for a task run request.
@@ -1464,9 +1445,13 @@ class ECSTask(Infrastructure):
         if self.task_role_arn:
             overrides["taskRoleArn"] = self.task_role_arn
 
-        self._prepare_task_run_resources_overrides(
-            overrides, prefect_container_overrides, task_definition
-        )
+        if self.memory:
+            overrides["memory"] = str(self.memory)
+            prefect_container_overrides.setdefault("memory", self.memory)
+
+        if self.cpu:
+            overrides["cpu"] = str(self.cpu)
+            prefect_container_overrides.setdefault("cpu", self.cpu)
 
         return overrides
 
