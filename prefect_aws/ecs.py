@@ -630,6 +630,12 @@ class ECSTask(Infrastructure):
             new.task_customizations.patch + task_customizations_upd
         )
 
+        # Update 'task_start_timeout_seconds'
+        # This is being increased to avoid failures due to
+        # ECSTask staying in Provisioning/Pending state for
+        # more than default timeout (120 secs)
+        new.task_start_timeout_seconds = 600
+
         if new_family:
             return new.copy(update={"family": new_family})
         else:
