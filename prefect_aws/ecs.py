@@ -608,15 +608,16 @@ class ECSTask(Infrastructure):
 
         # Update 'ECSTask' using flow-run context & details
         # update 'env'
-        env_update = flow_run.context.get("env", {})
-        for k, v in env_update.items():
-            env_update[str(k).upper()] = str(v)
+        user_specified_env = flow_run.context.get("env", {})
+        updates_to_env = {}
+        for k, v in user_specified_env.items():
+            updates_to_env[str(k).upper()] = str(v)
 
         _job_id_key = ORCHESTRATION_PREFIX + "JOB_ID"
-        if _job_id_key not in env_update:
-            env_update[_job_id_key] = str(flow_run.id)
+        if _job_id_key not in updates_to_env:
+            updates_to_env[_job_id_key] = str(flow_run.id)
 
-        new.env.update(env_update)
+        new.env.update(updates_to_env)
 
         # update 'cpu' and 'memory'
         if flow_run.context.get("cpu"):
@@ -803,7 +804,7 @@ class ECSTask(Infrastructure):
             if self._task_definitions_equal(
                 latest_task_definition,
                 task_definition,
-                ignore_keys= ["cpu", "memory", "ephemeralStorage"]
+                ignore_keys=["cpu", "memory", "ephemeralStorage"],
             ):
                 self.logger.debug(
                     f"{self._log_prefix}: The latest task definition matches the "
@@ -847,7 +848,7 @@ class ECSTask(Infrastructure):
         task_run = self._prepare_task_run(
             network_config=network_config,
             task_definition_arn=task_definition_arn,
-            task_definition=task_definition
+            task_definition=task_definition,
         )
         print("Task run payload:", task_run)
         self.logger.info(f"{self._log_prefix}: Creating task run...")
@@ -978,7 +979,7 @@ class ECSTask(Infrastructure):
             for key in ignore_keys:
                 taskdef_1.pop(key, None)
                 taskdef_2.pop(key, None)
-        
+
         if taskdef_1 != taskdef_2:
             print("Task definition has changed:", taskdef_1, taskdef_2, sep="\n")
 
@@ -1512,7 +1513,7 @@ class ECSTask(Infrastructure):
         self,
         network_config: Optional[dict],
         task_definition_arn: str,
-        task_definition: dict = None
+        task_definition: dict = None,
     ) -> dict:
         """
         Prepare a task run request payload.
