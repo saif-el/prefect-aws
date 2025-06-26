@@ -637,6 +637,10 @@ class ECSTask(Infrastructure):
         # more than default timeout (120 secs)
         new.task_start_timeout_seconds = 600
 
+        # update 'launch_type'
+        if flow_run.context.get("launch_type"):
+            new.launch_type = flow_run.context.get("launch_type")
+
         if new_family:
             return new.copy(update={"family": new_family})
         else:
